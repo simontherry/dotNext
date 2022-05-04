@@ -1,21 +1,96 @@
 ﻿using DotNext;
+using DotNext.Net.Cluster;
 using DotNext.Net.Cluster.Consensus.Raft;
+using DotNext.Net.Cluster.Consensus.Raft.Membership;
+using DotNext.Net.Http;
+
+using Microsoft.AspNetCore.Hosting.Server;
 
 namespace RaftNode;
 
 internal sealed class DataModifier : BackgroundService
 {
+    private IServiceProvider Server { get; }
+
+    private IConfiguration Configuration { get; }
+
     private readonly IRaftCluster cluster;
     private readonly ISupplier<long> valueProvider;
 
-    public DataModifier(IRaftCluster cluster, ISupplier<long> provider)
+    public DataModifier(IRaftCluster cluster, ISupplier<long> provider, IServiceProvider server, IConfiguration configuration)
     {
+        this.Server = server;
+        this.Configuration = configuration;
         this.cluster = cluster;
         valueProvider = provider;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var coldStart = Convert.ToBoolean(Configuration["coldStart"]);
+        if (coldStart)
+        {
+            var port = Convert.ToInt32(Configuration["port"]);
+            var config = this.Server.GetRequiredService<IClusterConfigurationStorage<HttpEndPoint>>();
+            await Task.Delay(1_000, stoppingToken).ConfigureAwait(false);
+
+            switch (port)
+            {
+                case 3262:
+                    {
+                        var address = new HttpEndPoint("localhost", 3263, true);
+                        var added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3262 adding 3263: {added}");
+
+                        await Task.Delay(1_000, stoppingToken).ConfigureAwait(false);
+
+                        address = new HttpEndPoint("localhost", 3264, true);
+                        added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3262 adding 3264: {added}");
+                        break;
+                    }
+
+                case 3263:
+                    {
+                        await Task.Delay(5_000, stoppingToken).ConfigureAwait(false);
+
+                        var address = new HttpEndPoint("localhost", 3262, true);
+                        var added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3263 adding 3262: {added}");
+
+                        await Task.Delay(1_000, stoppingToken).ConfigureAwait(false);
+
+                        address = new HttpEndPoint("localhost", 3264, true);
+                        added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3263 adding 3264: {added}");
+                        break;
+                    }
+
+                case 3264:
+                    {
+                        await Task.Delay(10_000, stoppingToken).ConfigureAwait(false);
+
+                        var address = new HttpEndPoint("localhost", 3262, true);
+                        var added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3264 adding 3262: {added}");
+
+                        await Task.Delay(1_000, stoppingToken).ConfigureAwait(false);
+
+                        address = new HttpEndPoint("localhost", 3263, true);
+                        added = await config.AddMemberAsync(ClusterMemberId.FromEndPoint(address), address, stoppingToken).ConfigureAwait(false);
+                        await config.ApplyAsync(stoppingToken).ConfigureAwait(false);
+                        Console.WriteLine($"3264 adding 3263: {added}");
+                        break;
+                    }
+            }
+
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             await Task.Delay(1000, stoppingToken).ConfigureAwait(false);

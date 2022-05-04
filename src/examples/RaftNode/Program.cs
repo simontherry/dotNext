@@ -25,6 +25,8 @@ switch (args.LongLength)
 
 static Task UseAspNetCoreHost(int port, string? persistentStorage = null)
 {
+    Console.WriteLine($"Starting asp net host: {port}");
+    var coldStart = !Directory.Exists(Path.Combine(Environment.CurrentDirectory, "state", port.ToString()));
     var configuration = new Dictionary<string, string>
             {
                 {"partitioning", "false"},
@@ -32,9 +34,10 @@ static Task UseAspNetCoreHost(int port, string? persistentStorage = null)
                 {"upperElectionTimeout", "300" },
                 {"requestTimeout", "00:10:00"},
                 {"publicEndPoint", $"https://localhost:{port}"},
-                {"coldStart", "false"},
+                {"coldStart", $"{coldStart}"},
                 {"requestJournal:memoryLimit", "5" },
-                {"requestJournal:expiration", "00:01:00" }
+                {"requestJournal:expiration", "00:01:00" },
+                {"port", port.ToString() }
             };
     if (!string.IsNullOrEmpty(persistentStorage))
         configuration[SimplePersistentState.LogLocation] = persistentStorage;
@@ -70,7 +73,7 @@ static async Task UseConfiguration(RaftCluster.NodeConfiguration config, string?
     {
         var state = new SimplePersistentState(persistentStorage, new AppEventSource());
         cluster.AuditTrail = state;
-        modifier = new DataModifier(cluster, state);
+        modifier = new DataModifier(cluster, state, null, null);
     }
     await cluster.StartAsync(CancellationToken.None);
     await (modifier?.StartAsync(CancellationToken.None) ?? Task.CompletedTask);

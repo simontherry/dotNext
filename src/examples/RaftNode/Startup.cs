@@ -45,7 +45,7 @@ internal sealed class Startup
 
     public void ConfigureServices(IServiceCollection services)
     {
-        services.UseInMemoryConfigurationStorage(AddClusterMembers)
+        services.UsePersistentConfigurationStorage(Path.Combine(Environment.CurrentDirectory, "state", this.configuration["port"]))
             .ConfigureCluster<ClusterConfigurator>()
             .AddSingleton<IHttpMessageHandlerFactory, RaftClientHandlerFactory>()
             .AddOptions()
