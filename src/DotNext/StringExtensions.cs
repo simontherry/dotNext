@@ -16,7 +16,7 @@ public static class StringExtensions
 
     private static void CreateReversedString(Span<char> output, string origin)
     {
-        origin.CopyTo(output);
+        origin.AsSpan().CopyTo(output);
         output.Reverse();
     }
 

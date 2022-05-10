@@ -249,7 +249,8 @@ public partial struct Base64Encoder
         }
         else
         {
-            Span<byte> utf8Chars = stackalloc byte[MaxCharsToFlush];
+            const int bufferSize = ((MaxBufferedDataSize + 2) / 3) * 4;
+            Span<byte> utf8Chars = stackalloc byte[bufferSize];
             charsWritten = Flush(utf8Chars);
             Utf8.ToUtf16(utf8Chars.Slice(0, charsWritten), output, out _, out charsWritten);
         }

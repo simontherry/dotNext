@@ -1,7 +1,6 @@
 using System.Collections;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.Serialization;
 
 namespace DotNext.Net.Cluster.Consensus.Raft;
 
@@ -70,29 +69,8 @@ public partial class RaftCluster<TMember>
         IEnumerator IEnumerable.GetEnumerator() => Values.GetEnumerator();
     }
 
-    /// <summary>
-    /// Indicates that the caller is trying to add or remove cluster member concurrently.
-    /// </summary>
-    /// <remarks>
-    /// The current implementation of Raft doesn't support adding or removing multiple cluster members at a time.
-    /// </remarks>
-    [Serializable]
-    public sealed class ConcurrentMembershipModificationException : RaftProtocolException
-    {
-        internal ConcurrentMembershipModificationException()
-            : base(ExceptionMessages.ConcurrentMembershipUpdate)
-        {
-        }
-
-        private ConcurrentMembershipModificationException(SerializationInfo info, StreamingContext context)
-            : base(info, context)
-        {
-        }
-    }
-
     private MemberList members;
     private InvocationList<Action<RaftCluster<TMember>, RaftClusterMemberEventArgs<TMember>>> memberAddedHandlers, memberRemovedHandlers;
-    private AtomicBoolean membershipState;
 
     /// <summary>
     /// Gets the member by its identifier.
@@ -215,59 +193,47 @@ public partial class RaftCluster<TMember>
     /// </returns>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="rounds"/> is less than or equal to zero.</exception>
     /// <exception cref="OperationCanceledException">The operation has been canceled or the cluster elects a new leader.</exception>
-    /// <exception cref="InvalidOperationException">The current node is not a leader.</exception>
-    /// <exception cref="ConcurrentMembershipModificationException">The method is called concurrently.</exception>
     protected async Task<bool> AddMemberAsync<TAddress>(TMember member, int rounds, IClusterConfigurationStorage<TAddress> configurationStorage, Func<TMember, TAddress> addressProvider, CancellationToken token = default)
         where TAddress : notnull
     {
         if (rounds <= 0)
             throw new ArgumentOutOfRangeException(nameof(rounds));
 
-        if (!membershipState.FalseToTrue())
-            throw new ConcurrentMembershipModificationException();
+        using var tokenSource = token.LinkTo(LeadershipToken);
 
-        var tokenSource = token.LinkTo(LeadershipToken);
-        try
+        // catch up node
+        member.NextIndex = auditTrail.LastUncommittedEntryIndex + 1;
+        long currentIndex;
+        do
         {
-            // catch up node
-            member.NextIndex = auditTrail.LastUncommittedEntryIndex + 1;
-            long currentIndex;
-            do
-            {
-                var commitIndex = auditTrail.LastCommittedEntryIndex;
-                currentIndex = auditTrail.LastUncommittedEntryIndex;
-                var precedingIndex = Math.Max(0, member.NextIndex - 1);
-                var precedingTerm = await auditTrail.GetTermAsync(precedingIndex, token).ConfigureAwait(false);
-                var term = Term;
+            var commitIndex = auditTrail.LastCommittedEntryIndex;
+            currentIndex = auditTrail.LastUncommittedEntryIndex;
+            var precedingIndex = Math.Max(0, member.NextIndex - 1);
+            var precedingTerm = await auditTrail.GetTermAsync(precedingIndex, token).ConfigureAwait(false);
+            var term = Term;
 
-                // do replication
-                var result = await new LeaderState.Replicator(auditTrail, ConfigurationStorage.ActiveConfiguration, ConfigurationStorage.ProposedConfiguration, member, commitIndex, currentIndex, term, precedingIndex, precedingTerm, Logger, token).ReplicateAsync(false).ConfigureAwait(false);
+            // do replication
+            var result = await new LeaderState.Replicator(auditTrail, ConfigurationStorage.ActiveConfiguration, ConfigurationStorage.ProposedConfiguration, member, commitIndex, currentIndex, term, precedingIndex, precedingTerm, Logger, token).ReplicateAsync(false).ConfigureAwait(false);
 
-                if (!result.Value && result.Term > term)
-                    return false;
-            }
-            while (rounds > 0 && currentIndex >= member.NextIndex);
+            if (!result.Value && result.Term > term)
+                return false;
+        }
+        while (rounds > 0 && currentIndex >= member.NextIndex);
 
-            // ensure that previous configuration has been committed
+        // ensure that previous configuration has been committed
+        await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
+
+        // proposes a new member
+        if (await configurationStorage.AddMemberAsync(member.Id, addressProvider(member), token).ConfigureAwait(false))
+        {
+            while (!await ReplicateAsync(new EmptyLogEntry(Term), token).ConfigureAwait(false));
+
+            // ensure that the newly added member has been committed
             await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
-
-            // proposes a new member
-            if (await configurationStorage.AddMemberAsync(member.Id, addressProvider(member), token).ConfigureAwait(false))
-            {
-                while (!await ReplicateAsync(new EmptyLogEntry(Term), token).ConfigureAwait(false));
-
-                // ensure that the newly added member has been committed
-                await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
-                return true;
-            }
-
-            return false;
+            return true;
         }
-        finally
-        {
-            tokenSource?.Dispose();
-            membershipState.Value = false;
-        }
+
+        return false;
     }
 
     /// <summary>
@@ -281,37 +247,22 @@ public partial class RaftCluster<TMember>
     /// <see langword="true"/> if the node has been removed from the cluster successfully;
     /// <see langword="false"/> if the node rejects the replication or the address of the node cannot be committed.
     /// </returns>
-    /// <exception cref="InvalidOperationException">The current node is not a leader.</exception>
-    /// <exception cref="OperationCanceledException">The operation has been canceled or the cluster elects a new leader.</exception>
-    /// <exception cref="ConcurrentMembershipModificationException">The method is called concurrently.</exception>
     public async Task<bool> RemoveMemberAsync<TAddress>(ClusterMemberId id, IClusterConfigurationStorage<TAddress> configurationStorage, CancellationToken token = default)
         where TAddress : notnull
     {
-        if (!membershipState.FalseToTrue())
-            throw new ConcurrentMembershipModificationException();
+        // ensure that previous configuration has been committed
+        await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
 
-        var tokenSource = token.LinkTo(LeadershipToken);
-        try
+        // remove the existing member
+        if (await configurationStorage.RemoveMemberAsync(id, token).ConfigureAwait(false))
         {
-            // ensure that previous configuration has been committed
+            while (!await ReplicateAsync(new EmptyLogEntry(Term), token).ConfigureAwait(false));
+
+            // ensure that the removed member has been committed
             await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
-
-            // remove the existing member
-            if (await configurationStorage.RemoveMemberAsync(id, token).ConfigureAwait(false))
-            {
-                while (!await ReplicateAsync(new EmptyLogEntry(Term), token).ConfigureAwait(false));
-
-                // ensure that the removed member has been committed
-                await configurationStorage.WaitForApplyAsync(token).ConfigureAwait(false);
-                return true;
-            }
-
-            return false;
+            return true;
         }
-        finally
-        {
-            tokenSource?.Dispose();
-            membershipState.Value = false;
-        }
+
+        return false;
     }
 }

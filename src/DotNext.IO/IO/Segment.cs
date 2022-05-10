@@ -1,19 +1,39 @@
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace DotNext.IO;
 
 [StructLayout(LayoutKind.Auto)]
-internal readonly record struct Segment
+internal readonly struct Segment : IEquatable<Segment>
 {
-    internal int Length { get; init; }
+    internal readonly int Length;
+    internal readonly long Offset;
 
-    internal long Offset { get; init; }
+    internal Segment(long offset, int length)
+    {
+        Length = length;
+        Offset = offset;
+    }
 
-    private long End => Length + Offset;
+    internal Segment Next(int length) => new(Length + Offset, length);
 
-    public static Segment operator >>(in Segment segment, int length)
-        => new() { Offset = segment.End, Length = length };
+    private bool Equals(in Segment other)
+        => Length == other.Length && Offset == other.Offset;
+
+    public bool Equals(Segment other)
+        => Equals(in other);
+
+    public override bool Equals([NotNullWhen(true)] object? other) => other is Segment window && Equals(in window);
+
+    public override int GetHashCode()
+        => HashCode.Combine(Offset, Length);
+
+    public static bool operator ==(in Segment x, in Segment y)
+        => x.Equals(in y);
+
+    public static bool operator !=(in Segment x, in Segment y)
+        => !x.Equals(in y);
 }
 
 internal interface IMemorySegmentProvider

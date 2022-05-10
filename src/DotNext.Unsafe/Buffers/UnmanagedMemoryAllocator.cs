@@ -1,5 +1,3 @@
-using System.Runtime.CompilerServices;
-
 namespace DotNext.Buffers;
 
 /// <summary>
@@ -42,11 +40,9 @@ internal static class UnmanagedMemoryAllocator<T>
         Allocator = AllocateRaw;
         ZeroedAllocator = AllocateZeroMem;
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
         static unsafe MemoryOwner<T> AllocateZeroMem(int length)
             => MemoryOwner<T>.Create(&Allocate, length, true);
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
         static unsafe MemoryOwner<T> AllocateRaw(int length)
             => MemoryOwner<T>.Create(&Allocate, length, false);
     }
